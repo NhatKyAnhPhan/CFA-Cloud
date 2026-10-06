@@ -1,0 +1,6 @@
+{
+  "name": "OmniConvert & MediaVault",
+  "description": "Bộ chuyển đổi file đa năng (PNG sang ICO, MP4 sang MP3...), công cụ tải video/nhạc từ mạng xã hội và kho lưu trữ đám mây an toàn.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
