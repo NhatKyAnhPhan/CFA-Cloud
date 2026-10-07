@@ -31,9 +31,14 @@ import {
   decryptBlob,
   exportVaultAsZip,
   formatBytes,
-  TOTAL_CLOUD_QUOTA_BYTES
+  STORAGE_PLANS,
+  StoragePlan,
+  getSelectedStoragePlan,
+  saveSelectedStoragePlan,
+  getDeviceStorageEstimate
 } from '../utils/cloudVault';
-import { detectCategory } from '../utils/converter';
+import { detectCategory, triggerBlobDownload } from '../utils/converter';
+import { Zap } from 'lucide-react';
 
 interface CloudVaultProps {
   onSendToConverter?: (file: File) => void;
@@ -67,6 +72,11 @@ export const CloudVault: React.FC<CloudVaultProps> = ({
   const [shareTarget, setShareTarget] = useState<VaultFileItem | null>(null);
   const [hasCopiedShare, setHasCopiedShare] = useState(false);
 
+  // Storage Plan & Upgrade state
+  const [currentPlan, setCurrentPlan] = useState<StoragePlan>(getSelectedStoragePlan);
+  const [isUpgradeModalOpen, setIsUpgradeModalOpen] = useState(false);
+  const [deviceFreeBytes, setDeviceFreeBytes] = useState<number | null>(null);
+
   // Upload ref
   const uploadInputRef = useRef<HTMLInputElement>(null);
 
@@ -84,6 +94,11 @@ export const CloudVault: React.FC<CloudVaultProps> = ({
 
   useEffect(() => {
     loadFiles();
+    getDeviceStorageEstimate().then((res) => {
+      if (res.free !== undefined) {
+        setDeviceFreeBytes(res.free);
+      }
+    });
   }, []);
 
   const handleDelete = async (id: string, name: string) => {
@@ -119,14 +134,7 @@ export const CloudVault: React.FC<CloudVaultProps> = ({
       return;
     }
 
-    const url = URL.createObjectURL(item.blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = item.name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    triggerBlobDownload(item.blob, item.name);
   };
 
   const handleUnlockPinSubmit = async () => {
@@ -202,20 +210,17 @@ export const CloudVault: React.FC<CloudVaultProps> = ({
     }
 
     const zipBlob = await exportVaultAsZip(unencrypted);
-    const url = URL.createObjectURL(zipBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `cloud_vault_backup_${new Date().toISOString().slice(0, 10)}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    triggerBlobDownload(zipBlob, `cloud_vault_backup_${new Date().toISOString().slice(0, 10)}.zip`);
     if (onShowToast) onShowToast('Đã xuất bản sao lưu ZIP của Kho Đám Mây!');
   };
 
   // Calculate storage usage
   const usedBytes = files.reduce((acc, curr) => acc + curr.size, 0);
-  const usedPercent = Math.min(100, Math.max(0.1, (usedBytes / TOTAL_CLOUD_QUOTA_BYTES) * 100));
+  const quotaBytes = currentPlan.bytes;
+  const isUnlimited = currentPlan.id === 'unlimited';
+  const usedPercent = isUnlimited
+    ? Math.min(100, Math.max(0.01, (usedBytes / (100 * 1024 * 1024 * 1024)) * 100))
+    : Math.min(100, Math.max(0.05, (usedBytes / quotaBytes) * 100));
 
   const imageBytes = files.filter((f) => f.category === 'image').reduce((a, c) => a + c.size, 0);
   const videoBytes = files.filter((f) => f.category === 'video').reduce((a, c) => a + c.size, 0);
@@ -285,39 +290,49 @@ export const CloudVault: React.FC<CloudVaultProps> = ({
 
         {/* Quota Meter */}
         <div className="space-y-2 pt-2">
-          <div className="flex items-center justify-between text-xs">
-            <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
               <HardDrive className="w-3.5 h-3.5 text-slate-400" />
               <span className="text-slate-300 font-medium">Dung Lượng Đã Dùng:</span>
               <span className="font-mono tabular-nums text-indigo-400 font-semibold">
                 {formatBytes(usedBytes)}
               </span>
-              <span className="text-slate-500">/ 15 GB Tiêu Chuẩn</span>
+              <span className="text-slate-400">
+                / {currentPlan.name} ({currentPlan.label})
+              </span>
+              <button
+                onClick={() => setIsUpgradeModalOpen(true)}
+                className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-indigo-500/15 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 hover:border-indigo-500 transition shadow-sm ml-1"
+                title="Tăng dung lượng đám mây lên 500 GB, 1 TB, 2 TB hoặc Không Giới Hạn"
+              >
+                <Zap className="w-3 h-3 text-indigo-400 fill-indigo-400/20" />
+                <span>Tăng dung lượng</span>
+              </button>
             </div>
             <span className="font-mono tabular-nums text-slate-400 font-medium">
-              {usedPercent.toFixed(2)}%
+              {isUnlimited ? 'Vô hạn' : `${usedPercent.toFixed(2)}%`}
             </span>
           </div>
 
           {/* Progress Multi-Bar */}
           <div className="w-full h-2.5 bg-slate-950 rounded-full overflow-hidden flex border border-slate-800">
             <div
-              style={{ width: `${Math.max(1, (imageBytes / TOTAL_CLOUD_QUOTA_BYTES) * 100)}%` }}
+              style={{ width: `${Math.max(0.5, (imageBytes / quotaBytes) * 100)}%` }}
               className="bg-indigo-500"
               title={`Hình ảnh: ${formatBytes(imageBytes)}`}
             />
             <div
-              style={{ width: `${Math.max(1, (audioBytes / TOTAL_CLOUD_QUOTA_BYTES) * 100)}%` }}
+              style={{ width: `${Math.max(0.5, (audioBytes / quotaBytes) * 100)}%` }}
               className="bg-emerald-500"
               title={`Âm thanh: ${formatBytes(audioBytes)}`}
             />
             <div
-              style={{ width: `${Math.max(1, (videoBytes / TOTAL_CLOUD_QUOTA_BYTES) * 100)}%` }}
+              style={{ width: `${Math.max(0.5, (videoBytes / quotaBytes) * 100)}%` }}
               className="bg-amber-500"
               title={`Video: ${formatBytes(videoBytes)}`}
             />
             <div
-              style={{ width: `${Math.max(1, (docBytes / TOTAL_CLOUD_QUOTA_BYTES) * 100)}%` }}
+              style={{ width: `${Math.max(0.5, (docBytes / quotaBytes) * 100)}%` }}
               className="bg-sky-500"
               title={`Tài liệu: ${formatBytes(docBytes)}`}
             />
@@ -714,6 +729,95 @@ export const CloudVault: React.FC<CloudVaultProps> = ({
                 <Download className="w-4 h-4" />
                 <span>Tải tệp này</span>
               </a>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Storage Plan Upgrade Modal */}
+      {isUpgradeModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2 text-indigo-400">
+                <Zap className="w-5 h-5 fill-indigo-400/20" />
+                <h3 className="font-semibold text-slate-100 text-base">Tùy Chọn Dung Lượng Đám Mây</h3>
+              </div>
+              <button
+                onClick={() => setIsUpgradeModalOpen(false)}
+                className="text-slate-400 hover:text-slate-100 text-sm font-semibold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400 leading-relaxed">
+              Tùy chỉnh không gian lưu trữ cho Kho Đám Mây An Toàn của bạn. Tăng dung lượng ngay lập tức mà không làm mất bất kỳ tệp tin nào đã lưu.
+            </p>
+
+            {deviceFreeBytes !== null && (
+              <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-[11px] text-slate-300 flex items-center justify-between">
+                <span className="text-slate-400">Ổ cứng thiết bị / trình duyệt còn trống:</span>
+                <span className="font-mono text-emerald-400 font-semibold">~{formatBytes(deviceFreeBytes)}</span>
+              </div>
+            )}
+
+            <div className="space-y-2.5 max-h-[50vh] overflow-y-auto pr-1">
+              {STORAGE_PLANS.map((plan) => {
+                const isSelected = currentPlan.id === plan.id;
+                return (
+                  <div
+                    key={plan.id}
+                    onClick={() => {
+                      const updated = saveSelectedStoragePlan(plan.id);
+                      setCurrentPlan(updated);
+                      if (onShowToast) onShowToast(`Đã nâng cấp dung lượng đám mây lên ${plan.label}!`);
+                      setIsUpgradeModalOpen(false);
+                    }}
+                    className={`p-3.5 rounded-xl border cursor-pointer transition flex items-center justify-between gap-3 ${
+                      isSelected
+                        ? 'bg-indigo-600/15 border-indigo-500 ring-1 ring-indigo-500'
+                        : 'bg-slate-950/60 border-slate-800 hover:border-slate-700 hover:bg-slate-800/40'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-semibold text-sm text-slate-100">{plan.label}</span>
+                        {plan.badge && (
+                          <span
+                            className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                              isSelected
+                                ? 'bg-indigo-600 text-white'
+                                : 'bg-slate-800 text-indigo-300'
+                            }`}
+                          >
+                            {plan.badge}
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-slate-400 mt-1">{plan.description}</p>
+                    </div>
+
+                    <div className="shrink-0">
+                      {isSelected ? (
+                        <div className="w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-bold">
+                          ✓
+                        </div>
+                      ) : (
+                        <div className="w-5 h-5 rounded-full border border-slate-700 hover:border-indigo-400" />
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => setIsUpgradeModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 transition"
+              >
+                Đóng
+              </button>
             </div>
           </div>
         </div>

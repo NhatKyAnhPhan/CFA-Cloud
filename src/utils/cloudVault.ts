@@ -26,7 +26,89 @@ export interface VaultFileItem {
 const DB_NAME = 'OmniVault_DB';
 const DB_VERSION = 1;
 const STORE_NAME = 'vault_files';
-export const TOTAL_CLOUD_QUOTA_BYTES = 15 * 1024 * 1024 * 1024; // 15 GB Safe Tier
+
+export interface StoragePlan {
+  id: string;
+  name: string;
+  label: string;
+  bytes: number;
+  badge?: string;
+  description: string;
+}
+
+export const STORAGE_PLANS: StoragePlan[] = [
+  {
+    id: '100gb',
+    name: '100 GB',
+    label: '100 GB Siêu Tốc',
+    bytes: 100 * 1024 * 1024 * 1024,
+    badge: 'Cơ bản',
+    description: 'Thoải mái lưu hàng chục ngàn ảnh PNG/ICO và tệp tài liệu',
+  },
+  {
+    id: '500gb',
+    name: '500 GB',
+    label: '500 GB Mở Rộng',
+    bytes: 500 * 1024 * 1024 * 1024,
+    badge: 'Nâng cao',
+    description: 'Lưu trữ hàng ngàn bài hát MP3 chất lượng cao 320kbps',
+  },
+  {
+    id: '1tb',
+    name: '1 TB',
+    label: '1 TB (1024 GB) Ultra',
+    bytes: 1024 * 1024 * 1024 * 1024,
+    badge: 'Mặc định & Khuyên dùng',
+    description: 'Dung lượng khổng lồ lưu trữ video Full HD, nhạc lossless và tài liệu',
+  },
+  {
+    id: '2tb',
+    name: '2 TB',
+    label: '2 TB (2048 GB) Pro',
+    bytes: 2048 * 1024 * 1024 * 1024,
+    badge: 'Chuyên nghiệp',
+    description: 'Dành cho thư viện video, dự án đồ họa và tệp đa phương tiện lớn',
+  },
+  {
+    id: 'unlimited',
+    name: 'Không giới hạn',
+    label: 'Không Giới Hạn (Unlimited Cloud Drive)',
+    bytes: 100 * 1024 * 1024 * 1024 * 1024, // 100 TB virtual ceiling
+    badge: 'Cực đại VIP',
+    description: 'Lưu trữ không giới hạn không gian, tối đa theo ổ cứng của thiết bị',
+  },
+];
+
+export const TOTAL_CLOUD_QUOTA_BYTES = 1024 * 1024 * 1024 * 1024; // Default upgraded to 1 TB
+
+export function getSelectedStoragePlan(): StoragePlan {
+  const savedId = typeof window !== 'undefined' ? localStorage.getItem('omni_cloud_plan_id') : null;
+  const plan = STORAGE_PLANS.find((p) => p.id === savedId);
+  return plan || STORAGE_PLANS.find((p) => p.id === '1tb') || STORAGE_PLANS[2];
+}
+
+export function saveSelectedStoragePlan(planId: string): StoragePlan {
+  const plan = STORAGE_PLANS.find((p) => p.id === planId) || STORAGE_PLANS[2];
+  if (typeof window !== 'undefined') {
+    localStorage.setItem('omni_cloud_plan_id', plan.id);
+  }
+  return plan;
+}
+
+export async function getDeviceStorageEstimate(): Promise<{ quota?: number; usage?: number; free?: number }> {
+  if (typeof navigator !== 'undefined' && navigator.storage && navigator.storage.estimate) {
+    try {
+      const estimate = await navigator.storage.estimate();
+      const quota = estimate.quota;
+      const usage = estimate.usage;
+      const free = quota && usage !== undefined ? Math.max(0, quota - usage) : undefined;
+      return { quota, usage, free };
+    } catch {
+      // Fallback
+    }
+  }
+  return {};
+}
 
 // Initialize IndexedDB
 function openDB(): Promise<IDBDatabase> {

@@ -17,6 +17,7 @@ import {
   Share2
 } from 'lucide-react';
 import { saveToVault, formatBytes } from '../utils/cloudVault';
+import { triggerBlobDownload } from '../utils/converter';
 
 interface MediaFormat {
   id: string;
@@ -143,13 +144,7 @@ export const MediaDownloader: React.FC<MediaDownloaderProps> = ({
       const sanitizedTitle = mediaInfo.title.replace(/[^\w\s-]/gi, '').trim().substring(0, 40) || 'media';
       const fileName = `${sanitizedTitle}_${fmt.quality}.${fmt.ext}`;
 
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob);
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(link.href);
+      triggerBlobDownload(blob, fileName);
     } catch (err) {
       console.error(err);
       setError('Lỗi khi tải xuống phương tiện');

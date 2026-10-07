@@ -2,6 +2,14 @@ import express, { Request, Response } from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import multer from 'multer';
+import { exec } from 'child_process';
+import util from 'util';
+import fs from 'fs';
+import os from 'os';
+
+const execPromise = util.promisify(exec);
+const upload = multer({ dest: os.tmpdir(), limits: { fileSize: 200 * 1024 * 1024 } });
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -9,8 +17,108 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+app.use(express.json({ limit: '100mb' }));
+app.use(express.urlencoded({ extended: true, limit: '100mb' }));
+
+function getMimeType(ext: string): string {
+  const map: Record<string, string> = {
+    mp3: 'audio/mpeg',
+    wav: 'audio/wav',
+    ogg: 'audio/ogg',
+    m4a: 'audio/mp4',
+    mp4: 'video/mp4',
+    webm: 'video/webm',
+    gif: 'image/gif',
+    ico: 'image/x-icon',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp',
+    bmp: 'image/bmp',
+    pdf: 'application/pdf',
+    csv: 'text/csv',
+    json: 'application/json',
+    html: 'text/html',
+    txt: 'text/plain',
+  };
+  return map[ext.toLowerCase()] || 'application/octet-stream';
+}
+
+// Full-power server-side FFmpeg converter endpoint
+app.post('/api/convert', upload.single('file'), async (req: Request, res: Response) => {
+  if (!req.file) {
+    res.status(400).json({ error: 'Chưa tải lên tệp tin cần chuyển đổi' });
+    return;
+  }
+
+  const targetExt = (req.body.targetExt as string || '').toLowerCase().replace(/^\./, '');
+  const quality = req.body.quality ? parseFloat(req.body.quality) : 0.92;
+  const bitrate = req.body.bitrate || '320k';
+  const inputPath = req.file.path;
+  const originalName = req.file.originalname || 'file';
+  const baseName = path.parse(originalName).name;
+  const outputId = `out_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const outputPath = path.join(os.tmpdir(), `${outputId}.${targetExt}`);
+
+  try {
+    let cmd = '';
+
+    // Audio target (from MP4 video or any audio)
+    if (targetExt === 'mp3') {
+      cmd = `ffmpeg -y -i "${inputPath}" -vn -c:a libmp3lame -b:a ${bitrate} "${outputPath}"`;
+    } else if (targetExt === 'wav') {
+      cmd = `ffmpeg -y -i "${inputPath}" -vn -c:a pcm_s16le -ar 44100 "${outputPath}"`;
+    } else if (targetExt === 'ogg') {
+      cmd = `ffmpeg -y -i "${inputPath}" -vn -c:a libvorbis -q:a 5 "${outputPath}"`;
+    } else if (targetExt === 'm4a') {
+      cmd = `ffmpeg -y -i "${inputPath}" -vn -c:a aac -b:a ${bitrate} "${outputPath}"`;
+    }
+    // Video target
+    else if (targetExt === 'gif') {
+      cmd = `ffmpeg -y -i "${inputPath}" -vf "fps=10,scale=360:-1:flags=lanczos" -t 6 "${outputPath}"`;
+    } else if (targetExt === 'webm') {
+      cmd = `ffmpeg -y -i "${inputPath}" -c:v libvpx-vp9 -b:v 1M -c:a libopus "${outputPath}"`;
+    } else if (targetExt === 'mp4') {
+      cmd = `ffmpeg -y -i "${inputPath}" -c:v libx264 -pix_fmt yuv420p -c:a aac -movflags +faststart "${outputPath}"`;
+    }
+    // Image target
+    else if (targetExt === 'ico') {
+      // Build high resolution Windows icon
+      cmd = `ffmpeg -y -i "${inputPath}" -vf "scale=256:256" "${outputPath}"`;
+    } else if (targetExt === 'webp') {
+      cmd = `ffmpeg -y -i "${inputPath}" -c:v libwebp -quality ${Math.round(quality * 100)} "${outputPath}"`;
+    } else if (targetExt === 'jpg' || targetExt === 'jpeg') {
+      cmd = `ffmpeg -y -i "${inputPath}" -q:v 2 "${outputPath}"`;
+    } else if (targetExt === 'png') {
+      cmd = `ffmpeg -y -i "${inputPath}" "${outputPath}"`;
+    } else if (targetExt === 'bmp') {
+      cmd = `ffmpeg -y -i "${inputPath}" "${outputPath}"`;
+    } else {
+      // General conversion fallback
+      cmd = `ffmpeg -y -i "${inputPath}" "${outputPath}"`;
+    }
+
+    await execPromise(cmd, { timeout: 30000 });
+
+    if (!fs.existsSync(outputPath)) {
+      throw new Error('FFmpeg không tạo được tệp đầu ra');
+    }
+
+    const fileData = await fs.promises.readFile(outputPath);
+    const outFileName = `${baseName}.${targetExt}`;
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(outFileName)}"`);
+    res.setHeader('Content-Type', getMimeType(targetExt));
+    res.setHeader('X-Converted-Filename', encodeURIComponent(outFileName));
+    res.send(fileData);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('Lỗi chuyển đổi server:', message);
+    res.status(500).json({ error: `Lỗi chuyển đổi: ${message}` });
+  } finally {
+    fs.promises.unlink(inputPath).catch(() => {});
+    fs.promises.unlink(outputPath).catch(() => {});
+  }
+});
 
 // Helper to extract platform info and metadata
 app.post('/api/media-info', async (req: Request, res: Response) => {
@@ -237,29 +345,54 @@ app.get('/api/proxy-download', async (req: Request, res: Response) => {
   }
 });
 
-// Mock/Synthetic Media Stream Generator for Social Media download demos
-// Generates a valid sample media file (MP4, MP3, PNG) with audio or video content
-app.get('/api/generate-media-sample', (req: Request, res: Response) => {
+// Real Media Stream Generator for Social Media download demos
+// Generates a 100% real valid playable media file with FFmpeg (MP4, MP3, PNG, WAV)
+app.get('/api/generate-media-sample', async (req: Request, res: Response) => {
   const ext = (req.query.ext as string) || 'mp3';
   const title = (req.query.title as string) || 'downloaded_media';
+  const outId = `sample_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+  const outPath = path.join(os.tmpdir(), `${outId}.${ext}`);
 
-  if (ext === 'png') {
-    // 1x1 transparent png minimum or simple valid png
-    const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-    const buf = Buffer.from(pngBase64, 'base64');
-    res.setHeader('Content-Type', 'image/png');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(title)}.png"`);
-    res.send(buf);
-    return;
+  try {
+    if (ext === 'mp4') {
+      // 3-second test video with video stream & audio tone
+      await execPromise(
+        `ffmpeg -y -f lavfi -i "testsrc=duration=3:size=480x270:rate=24" -f lavfi -i "sine=frequency=440:duration=3" -c:v libx264 -pix_fmt yuv420p -c:a aac -shortest "${outPath}"`
+      );
+    } else if (ext === 'mp3') {
+      // 3-second valid mp3 audio
+      await execPromise(
+        `ffmpeg -y -f lavfi -i "sine=frequency=440:duration=3" -c:a libmp3lame -b:a 192k "${outPath}"`
+      );
+    } else if (ext === 'wav') {
+      await execPromise(
+        `ffmpeg -y -f lavfi -i "sine=frequency=440:duration=3" -c:a pcm_s16le "${outPath}"`
+      );
+    } else {
+      // PNG image
+      await execPromise(
+        `ffmpeg -y -f lavfi -i "color=c=0x4f46e5:s=480x270:d=1" -vframes 1 "${outPath}"`
+      );
+    }
+
+    const fileBuf = await fs.promises.readFile(outPath);
+    res.setHeader('Content-Type', getMimeType(ext));
+    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(title)}.${ext}"`);
+    res.send(fileBuf);
+  } catch (e) {
+    console.error('Error generating sample:', e);
+    // Fallback minimal 1x1 transparent png if image
+    if (ext === 'png') {
+      const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(title)}.png"`);
+      res.send(Buffer.from(pngBase64, 'base64'));
+      return;
+    }
+    res.status(500).send('Lỗi tạo mẫu phương tiện');
+  } finally {
+    fs.promises.unlink(outPath).catch(() => {});
   }
-
-  // Audio / Video binary headers
-  res.setHeader('Content-Type', ext === 'mp4' ? 'video/mp4' : 'audio/mpeg');
-  res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(title)}.${ext}"`);
-  
-  // Create an informative dummy buffer so user can test download seamlessly
-  const dummyData = Buffer.from(`[OmniConvert Stream Container: ${title} in format .${ext}] Generated successfully.`);
-  res.send(dummyData);
 });
 
 // Setup Vite middleware in dev or static files in production

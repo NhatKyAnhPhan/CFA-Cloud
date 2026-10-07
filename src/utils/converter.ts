@@ -94,21 +94,74 @@ export function getAvailableTargets(file: File): FormatDefinition[] {
 }
 
 /**
- * Helper to read File as Image element
+ * Safely trigger a blob download without premature URL revocation
+ */
+export function triggerBlobDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.style.display = 'none';
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => {
+    if (a.parentNode) {
+      document.body.removeChild(a);
+    }
+    URL.revokeObjectURL(url);
+  }, 30000);
+}
+
+/**
+ * Convert file via backend FFmpeg engine (robust for all video, audio, and complex formats)
+ */
+export async function convertViaServer(
+  file: File,
+  targetExt: string,
+  options: ConversionOptions = {}
+): Promise<{ blob: Blob; fileName: string }> {
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('targetExt', targetExt);
+  if (options.quality !== undefined) formData.append('quality', options.quality.toString());
+  if (options.audioBitrate !== undefined) formData.append('bitrate', `${options.audioBitrate}k`);
+
+  const res = await fetch('/api/convert', {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!res.ok) {
+    let errText = 'Lỗi máy chủ chuyển đổi';
+    try {
+      const errJson = await res.json();
+      if (errJson.error) errText = errJson.error;
+    } catch {
+      errText = `Máy chủ phản hồi mã lỗi ${res.status}`;
+    }
+    throw new Error(errText);
+  }
+
+  const blob = await res.blob();
+  const baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
+  const fileName = `${baseName}.${targetExt}`;
+  return { blob, fileName };
+}
+
+/**
+ * Helper to read File as Image element using reliable FileReader Data URL
  */
 function loadImageFromFile(file: File): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(img);
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`Không thể giải mã hình ảnh "${file.name}"`));
+      img.src = reader.result as string;
     };
-    img.onerror = (e) => {
-      URL.revokeObjectURL(url);
-      reject(new Error('Không thể tải hình ảnh: ' + String(e)));
-    };
-    img.src = url;
+    reader.onerror = () => reject(new Error(`Không thể đọc tệp "${file.name}"`));
+    reader.readAsDataURL(file);
   });
 }
 
@@ -641,63 +694,77 @@ export async function convertFile(
   const newName = `${baseName}.${targetExt}`;
   const category = detectCategory(file);
 
-  // 1. Target is ICO
-  if (targetExt === 'ico') {
-    const icoBlob = await convertToIco(file, options.icoSizes);
-    return { blob: icoBlob, fileName: newName };
+  // 1. Audio & Video conversions (MP4 -> MP3, WAV, GIF, WEBM...)
+  // Use high-performance server-side FFmpeg first for guaranteed fidelity
+  if (category === 'video' || category === 'audio' || ['mp3', 'wav', 'gif', 'webm', 'ogg', 'm4a'].includes(targetExt)) {
+    try {
+      return await convertViaServer(file, targetExt, options);
+    } catch (serverErr) {
+      console.warn('Server FFmpeg conversion failed, trying client fallback:', serverErr);
+      if (category === 'video' && targetExt === 'gif') {
+        const gifBlob = await convertVideoToGif(file, options.gifDuration ?? 3, options.gifFps ?? 8);
+        return { blob: gifBlob, fileName: newName };
+      }
+      if (targetExt === 'mp3' || targetExt === 'wav') {
+        const audioBlob = await extractAudioTrack(file, targetExt);
+        return { blob: audioBlob, fileName: newName };
+      }
+      throw serverErr;
+    }
   }
 
-  // 2. Target is other image format (JPG, PNG, WEBP, BMP, SVG, PDF)
+  // 2. Image conversions (PNG -> ICO, JPG, WEBP, BMP, SVG, PDF)
   if (category === 'image') {
-    if (targetExt === 'bmp') {
-      const bmpBlob = await convertToBmp(file);
-      return { blob: bmpBlob, fileName: newName };
-    }
-    if (targetExt === 'svg') {
-      const svgBlob = await convertToSvg(file);
-      return { blob: svgBlob, fileName: newName };
-    }
-    if (targetExt === 'pdf') {
-      const pdfBlob = await convertImageToPdf(file);
-      return { blob: pdfBlob, fileName: newName };
-    }
+    try {
+      if (targetExt === 'ico') {
+        const icoBlob = await convertToIco(file, options.icoSizes);
+        return { blob: icoBlob, fileName: newName };
+      }
+      if (targetExt === 'bmp') {
+        const bmpBlob = await convertToBmp(file);
+        return { blob: bmpBlob, fileName: newName };
+      }
+      if (targetExt === 'svg') {
+        const svgBlob = await convertToSvg(file);
+        return { blob: svgBlob, fileName: newName };
+      }
+      if (targetExt === 'pdf') {
+        const pdfBlob = await convertImageToPdf(file);
+        return { blob: pdfBlob, fileName: newName };
+      }
 
-    // Canvas standard formats (png, jpg, webp)
-    const img = await loadImageFromFile(file);
-    const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth || img.width;
-    canvas.height = img.naturalHeight || img.height;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Lỗi Canvas 2D');
+      // Canvas standard formats (png, jpg, webp)
+      const img = await loadImageFromFile(file);
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth || img.width;
+      canvas.height = img.naturalHeight || img.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Lỗi Canvas 2D');
 
-    if (targetExt === 'jpg' || targetExt === 'jpeg') {
-      // Fill white background for JPEG so transparent PNG doesn't become black
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      if (targetExt === 'jpg' || targetExt === 'jpeg') {
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+      ctx.drawImage(img, 0, 0);
+
+      const mime = targetExt === 'png' ? 'image/png' : targetExt === 'webp' ? 'image/webp' : 'image/jpeg';
+      const quality = options.quality ?? 0.92;
+
+      const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, mime, quality));
+      if (!blob) throw new Error(`Không thể xuất định dạng ${targetExt}`);
+      return { blob, fileName: newName };
+    } catch (clientErr) {
+      console.warn('Client image conversion failed, attempting server FFmpeg:', clientErr);
+      // Seamlessly fall back to server FFmpeg conversion
+      try {
+        return await convertViaServer(file, targetExt, options);
+      } catch {
+        throw clientErr;
+      }
     }
-    ctx.drawImage(img, 0, 0);
-
-    const mime = targetExt === 'png' ? 'image/png' : targetExt === 'webp' ? 'image/webp' : 'image/jpeg';
-    const quality = options.quality ?? 0.92;
-
-    const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, mime, quality));
-    if (!blob) throw new Error(`Không thể xuất định dạng ${targetExt}`);
-    return { blob, fileName: newName };
   }
 
-  // 3. Audio & Video conversions
-  if (category === 'video' || category === 'audio') {
-    if (targetExt === 'mp3' || targetExt === 'wav') {
-      const audioBlob = await extractAudioTrack(file, targetExt);
-      return { blob: audioBlob, fileName: newName };
-    }
-    if (targetExt === 'gif' && category === 'video') {
-      const gifBlob = await convertVideoToGif(file, options.gifDuration ?? 3, options.gifFps ?? 8);
-      return { blob: gifBlob, fileName: newName };
-    }
-  }
-
-  // 4. Data conversions (JSON <-> CSV)
+  // 3. Data conversions (JSON <-> CSV)
   if (category === 'data' || category === 'document') {
     const text = await file.text();
     if (targetExt === 'csv') {
@@ -713,13 +780,13 @@ export async function convertFile(
       return { blob: new Blob([html], { type: 'text/html' }), fileName: newName };
     }
     if (targetExt === 'pdf') {
-      // Simple text-to-pdf stream
       const html = convertMarkdownToHtml(text);
       return { blob: new Blob([html], { type: 'text/html' }), fileName: `${baseName}.html` };
     }
   }
 
-  throw new Error(`Định dạng chuyển đổi chưa được hỗ trợ từ .${file.name.split('.').pop()} sang .${targetExt}`);
+  // 4. Default fallback: send to server FFmpeg
+  return await convertViaServer(file, targetExt, options);
 }
 
 function escapeXml(unsafe: string): string {

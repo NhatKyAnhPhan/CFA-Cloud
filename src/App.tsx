@@ -15,6 +15,7 @@ import {
 import { FileConverter } from './components/FileConverter';
 import { MediaDownloader } from './components/MediaDownloader';
 import { CloudVault } from './components/CloudVault';
+import { getSelectedStoragePlan } from './utils/cloudVault';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'converter' | 'downloader' | 'vault'>('converter');
@@ -148,13 +149,13 @@ export default function App() {
               )}
               {activeTab === 'vault' && (
                 <>
-                  <span>15 GB Tiêu Chuẩn</span>
+                  <span className="text-emerald-400 font-semibold">{getSelectedStoragePlan().label}</span>
                   <span aria-hidden="true">·</span>
-                  <span>Lưu trữ IndexedDB Vĩnh Viễn</span>
+                  <span>Lưu trữ IndexedDB Bền Vững</span>
                   <span aria-hidden="true">·</span>
                   <span>Khóa PIN AES-GCM</span>
                   <span aria-hidden="true">·</span>
-                  <span>Sao lưu ZIP</span>
+                  <span>Tùy chỉnh mở rộng</span>
                 </>
               )}
             </div>

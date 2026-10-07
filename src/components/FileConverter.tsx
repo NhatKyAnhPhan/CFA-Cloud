@@ -23,6 +23,7 @@ import {
   convertFile,
   detectCategory,
   getAvailableTargets,
+  triggerBlobDownload,
   FormatDefinition,
   ConversionOptions
 } from '../utils/converter';
@@ -172,14 +173,7 @@ export const FileConverter: React.FC<FileConverterProps> = ({
 
   const handleDownloadSingle = (item: FileItem) => {
     if (!item.convertedBlob || !item.convertedName) return;
-    const url = URL.createObjectURL(item.convertedBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = item.convertedName;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    triggerBlobDownload(item.convertedBlob, item.convertedName);
   };
 
   const handleDownloadAllZip = async () => {
@@ -192,14 +186,7 @@ export const FileConverter: React.FC<FileConverterProps> = ({
     });
 
     const zipBlob = await zip.generateAsync({ type: 'blob' });
-    const url = URL.createObjectURL(zipBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `omniconvert_batch_${new Date().toISOString().slice(0, 10)}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    triggerBlobDownload(zipBlob, `omniconvert_batch_${new Date().toISOString().slice(0, 10)}.zip`);
   };
 
   const handleSaveToVault = async (item: FileItem) => {
