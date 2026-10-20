@@ -10,15 +10,17 @@ import {
   Info,
   CheckCircle2,
   Lock,
-  ArrowRight
+  ArrowRight,
+  Code
 } from 'lucide-react';
 import { FileConverter } from './components/FileConverter';
 import { MediaDownloader } from './components/MediaDownloader';
 import { CloudVault } from './components/CloudVault';
+import { CoderStudio } from './components/CoderStudio';
 import { getSelectedStoragePlan } from './utils/cloudVault';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'converter' | 'downloader' | 'vault'>('converter');
+  const [activeTab, setActiveTab] = useState<'converter' | 'downloader' | 'vault' | 'coder'>('converter');
   const [incomingFileForConverter, setIncomingFileForConverter] = useState<File | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -102,6 +104,18 @@ export default function App() {
               <Cloud className="w-3.5 h-3.5" />
               <span>Kho Đám Mây</span>
             </button>
+
+            <button
+              onClick={() => setActiveTab('coder')}
+              className={`px-3 sm:px-4 py-2 rounded-xl text-xs font-semibold transition whitespace-nowrap flex items-center gap-1.5 ${
+                activeTab === 'coder'
+                  ? 'bg-indigo-600 text-white shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+              }`}
+            >
+              <Code className="w-3.5 h-3.5" />
+              <span>Dành Cho Coder</span>
+            </button>
           </nav>
 
           {/* Zone 3: Primary Action / Quick Trust indicator */}
@@ -123,6 +137,7 @@ export default function App() {
               {activeTab === 'converter' && 'Bộ Chuyển Đổi Tệp Tin Đa Năng'}
               {activeTab === 'downloader' && 'Tải Video & Âm Thanh Mạng Xã Hội'}
               {activeTab === 'vault' && 'Kho Lưu Trữ Tệp Đám Mây An Toàn'}
+              {activeTab === 'coder' && 'Bộ Công Cụ Chuyển Đổi Cho Coder & Lập Trình Viên'}
             </h1>
             <div className="flex items-center gap-2 text-xs text-slate-400 mt-1">
               {activeTab === 'converter' && (
@@ -158,6 +173,19 @@ export default function App() {
                   <span>Tùy chỉnh mở rộng</span>
                 </>
               )}
+              {activeTab === 'coder' && (
+                <>
+                  <span className="text-indigo-400 font-semibold">Mọi tệp sang Base64</span>
+                  <span aria-hidden="true">·</span>
+                  <span>Không giới hạn dung lượng</span>
+                  <span aria-hidden="true">·</span>
+                  <span>JSON ➔ TypeScript & Python</span>
+                  <span aria-hidden="true">·</span>
+                  <span>SVG ➔ React JSX</span>
+                  <span aria-hidden="true">·</span>
+                  <span>JWT & Checksum</span>
+                </>
+              )}
             </div>
           </div>
 
@@ -182,10 +210,19 @@ export default function App() {
             )}
             {activeTab === 'vault' && (
               <button
+                onClick={() => setActiveTab('coder')}
+                className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-medium transition"
+              >
+                <span>Công cụ dành cho Coder</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {activeTab === 'coder' && (
+              <button
                 onClick={() => setActiveTab('converter')}
                 className="inline-flex items-center gap-1 text-indigo-400 hover:text-indigo-300 font-medium transition"
               >
-                <span>Chuyển đổi định dạng tệp mới</span>
+                <span>Sang Bộ chuyển đổi tệp</span>
                 <ArrowRight className="w-3.5 h-3.5" />
               </button>
             )}
@@ -212,6 +249,13 @@ export default function App() {
           <CloudVault
             onSendToConverter={handleSendToConverter}
             onShowToast={showToast}
+          />
+        )}
+
+        {activeTab === 'coder' && (
+          <CoderStudio
+            onShowToast={showToast}
+            onSavedToVault={showToast}
           />
         )}
       </main>
