@@ -1,6 +1,9 @@
 node_modules/
 build/
 dist/
+dist-electron/
+release/
+tools/yt-dlp.exe
 coverage/
 .DS_Store
 *.log

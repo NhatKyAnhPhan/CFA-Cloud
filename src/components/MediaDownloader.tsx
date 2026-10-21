@@ -43,6 +43,37 @@ interface MediaDownloaderProps {
   onSendToConverter?: (file: File) => void;
 }
 
+function downloadBlob(
+  url: string,
+  onProgress: (event: ProgressEvent<EventTarget>) => void,
+): Promise<Blob> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('GET', url, true);
+    xhr.responseType = 'blob';
+    xhr.onprogress = onProgress;
+    xhr.onload = async () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve(xhr.response);
+      } else {
+        let message = `Lỗi tải xuống: Mã ${xhr.status}`;
+        try {
+          const body = JSON.parse(await xhr.response.text()) as { error?: unknown };
+          if (typeof body.error === 'string') message = body.error;
+        } catch {
+          // Keep the HTTP status message when the response is not JSON.
+        }
+        reject(new Error(message));
+      }
+    };
+    xhr.onerror = () => reject(new Error(
+      xhr.getResponseHeader('X-Download-Error') || 'Lỗi kết nối khi tải xuống',
+    ));
+    xhr.onabort = () => reject(new Error('Đã hủy tải xuống'));
+    xhr.send();
+  });
+}
+
 export const MediaDownloader: React.FC<MediaDownloaderProps> = ({
   onSavedToVault,
   onSendToConverter,
@@ -50,9 +81,35 @@ export const MediaDownloader: React.FC<MediaDownloaderProps> = ({
   const [url, setUrl] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
+  const [downloadProgress, setDownloadProgress] = useState<number>(0);
+  const [downloadedBytes, setDownloadedBytes] = useState<number>(0);
+  const [downloadTotalBytes, setDownloadTotalBytes] = useState<number>(0);
   const [mediaInfo, setMediaInfo] = useState<MediaMetadata | null>(null);
   const [activeTab, setActiveTab] = useState<'video' | 'audio' | 'image'>('video');
   const [error, setError] = useState<string | null>(null);
+
+  const updateDownloadProgress = (event: ProgressEvent<EventTarget>) => {
+    setDownloadedBytes(event.loaded);
+    if (event.lengthComputable && event.total > 0) {
+      setDownloadTotalBytes(event.total);
+      setDownloadProgress(Math.round((event.loaded / event.total) * 100));
+    } else {
+      setDownloadTotalBytes(0);
+      setDownloadProgress(0);
+    }
+  };
+
+  const getFormatDownloadUrl = (fmt: MediaFormat) => {
+    if (fmt.downloadUrl) return fmt.downloadUrl;
+    const urlParam = url ? `&url=${encodeURIComponent(url)}` : '';
+    return `/api/generate-media-sample?ext=${fmt.ext}&title=${encodeURIComponent(mediaInfo?.title || 'download')}${urlParam}`;
+  };
+
+  const resetDownloadProgress = () => {
+    setDownloadProgress(0);
+    setDownloadedBytes(0);
+    setDownloadTotalBytes(0);
+  };
 
   // Quick sample demo URLs
   const sampleUrls = [
@@ -130,26 +187,18 @@ export const MediaDownloader: React.FC<MediaDownloaderProps> = ({
   const handleDownloadFormat = async (fmt: MediaFormat) => {
     if (!mediaInfo) return;
     setDownloadingId(fmt.id);
+    resetDownloadProgress();
 
     try {
-      let downloadUrl = fmt.downloadUrl;
-
-      // If no direct download URL, stream sample payload
-      if (!downloadUrl) {
-        downloadUrl = `/api/generate-media-sample?ext=${fmt.ext}&title=${encodeURIComponent(mediaInfo.title)}`;
-      }
-
-      const res = await fetch(downloadUrl);
-      const blob = await res.blob();
+      const blob = await downloadBlob(getFormatDownloadUrl(fmt), updateDownloadProgress);
       const sanitizedTitle = mediaInfo.title.replace(/[^\w\s-]/gi, '').trim().substring(0, 40) || 'media';
       const fileName = `${sanitizedTitle}_${fmt.quality}.${fmt.ext}`;
-
       triggerBlobDownload(blob, fileName);
     } catch (err) {
-      console.error(err);
-      setError('Lỗi khi tải xuống phương tiện');
+      setError(err instanceof Error ? err.message : 'Lỗi khi tải xuống phương tiện');
     } finally {
       setDownloadingId(null);
+      resetDownloadProgress();
     }
   };
 
@@ -157,18 +206,12 @@ export const MediaDownloader: React.FC<MediaDownloaderProps> = ({
   const handleSaveToVault = async (fmt: MediaFormat) => {
     if (!mediaInfo) return;
     setDownloadingId(fmt.id);
+    resetDownloadProgress();
 
     try {
-      let downloadUrl = fmt.downloadUrl;
-      if (!downloadUrl) {
-        downloadUrl = `/api/generate-media-sample?ext=${fmt.ext}&title=${encodeURIComponent(mediaInfo.title)}`;
-      }
-
-      const res = await fetch(downloadUrl);
-      const blob = await res.blob();
+      const blob = await downloadBlob(getFormatDownloadUrl(fmt), updateDownloadProgress);
       const sanitizedTitle = mediaInfo.title.replace(/[^\w\s-]/gi, '').trim().substring(0, 40) || 'media';
       const fileName = `${sanitizedTitle}_${fmt.quality}.${fmt.ext}`;
-
       await saveToVault({
         name: fileName,
         blob,
@@ -181,10 +224,10 @@ export const MediaDownloader: React.FC<MediaDownloaderProps> = ({
         onSavedToVault(`Đã lưu "${fileName}" an toàn vào Kho Đám Mây!`);
       }
     } catch (err) {
-      console.error(err);
-      setError('Lỗi khi lưu vào đám mây');
+      setError(err instanceof Error ? err.message : 'Lỗi khi lưu vào đám mây');
     } finally {
       setDownloadingId(null);
+      resetDownloadProgress();
     }
   };
 
@@ -192,24 +235,20 @@ export const MediaDownloader: React.FC<MediaDownloaderProps> = ({
   const handleSendToConverter = async (fmt: MediaFormat) => {
     if (!mediaInfo || !onSendToConverter) return;
     setDownloadingId(fmt.id);
+    resetDownloadProgress();
 
     try {
-      let downloadUrl = fmt.downloadUrl;
-      if (!downloadUrl) {
-        downloadUrl = `/api/generate-media-sample?ext=${fmt.ext}&title=${encodeURIComponent(mediaInfo.title)}`;
-      }
-
-      const res = await fetch(downloadUrl);
-      const blob = await res.blob();
+      const blob = await downloadBlob(getFormatDownloadUrl(fmt), updateDownloadProgress);
       const sanitizedTitle = mediaInfo.title.replace(/[^\w\s-]/gi, '').trim().substring(0, 40) || 'media';
       const fileName = `${sanitizedTitle}.${fmt.ext}`;
 
       const file = new File([blob], fileName, { type: blob.type });
       onSendToConverter(file);
     } catch (err) {
-      console.error(err);
+      setError(err instanceof Error ? err.message : 'Lỗi khi gửi tệp sang bộ chuyển đổi');
     } finally {
       setDownloadingId(null);
+      resetDownloadProgress();
     }
   };
 
@@ -396,67 +435,86 @@ export const MediaDownloader: React.FC<MediaDownloaderProps> = ({
               filteredFormats.map((fmt) => (
                 <div
                   key={fmt.id}
-                  className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:bg-slate-800/40 transition"
+                  className="p-4 flex flex-col gap-3 hover:bg-slate-800/40 transition"
                 >
-                  <div className="flex items-center gap-3">
-                    <div className="w-9 h-9 rounded-lg bg-slate-800 flex items-center justify-center text-indigo-400 shrink-0">
-                      {fmt.type === 'video' ? (
-                        <Video className="w-4 h-4" />
-                      ) : fmt.type === 'audio' ? (
-                        <Music className="w-4 h-4" />
-                      ) : (
-                        <ImageIcon className="w-4 h-4" />
-                      )}
-                    </div>
-                    <div>
-                      <div className="text-sm font-semibold text-slate-200">
-                        {fmt.label}
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      <div className="w-9 h-9 rounded-lg bg-slate-800 flex items-center justify-center text-indigo-400 shrink-0">
+                        {fmt.type === 'video' ? (
+                          <Video className="w-4 h-4" />
+                        ) : fmt.type === 'audio' ? (
+                          <Music className="w-4 h-4" />
+                        ) : (
+                          <ImageIcon className="w-4 h-4" />
+                        )}
                       </div>
-                      <div className="flex items-center gap-2 text-xs text-slate-400">
-                        <span className="font-mono text-indigo-300 font-medium">{fmt.quality}</span>
-                        <span>·</span>
-                        <span className="font-mono tabular-nums">{fmt.sizeEst}</span>
+                      <div>
+                        <div className="text-sm font-semibold text-slate-200">
+                          {fmt.label}
+                        </div>
+                        <div className="flex items-center gap-2 text-xs text-slate-400">
+                          <span className="font-mono text-indigo-300 font-medium">{fmt.quality}</span>
+                          <span>·</span>
+                          <span className="font-mono tabular-nums">{fmt.sizeEst}</span>
+                        </div>
                       </div>
                     </div>
-                  </div>
 
-                  <div className="flex items-center gap-2">
-                    {/* Direct Download */}
-                    <button
-                      onClick={() => handleDownloadFormat(fmt)}
-                      disabled={downloadingId === fmt.id}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white transition shadow-sm"
-                    >
-                      {downloadingId === fmt.id ? (
-                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Download className="w-3.5 h-3.5" />
-                      )}
-                      <span>Tải Về Máy</span>
-                    </button>
-
-                    {/* Direct to Vault */}
-                    <button
-                      onClick={() => handleSaveToVault(fmt)}
-                      disabled={downloadingId === fmt.id}
-                      className="p-1.5 rounded-lg text-xs bg-slate-800 hover:bg-emerald-600 text-slate-300 hover:text-white border border-slate-700 transition"
-                      title="Lưu an toàn vào Kho Đám Mây"
-                    >
-                      <Cloud className="w-4 h-4" />
-                    </button>
-
-                    {/* Send to Converter */}
-                    {onSendToConverter && (
+                    <div className="flex items-center gap-2">
+                      {/* Direct Download */}
                       <button
-                        onClick={() => handleSendToConverter(fmt)}
+                        onClick={() => handleDownloadFormat(fmt)}
                         disabled={downloadingId === fmt.id}
-                        className="p-1.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
-                        title="Chuyển sang Bộ Chuyển Đổi (PNG sang ICO, MP4 sang MP3...)"
+                        className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 text-white transition shadow-sm"
                       >
-                        <RefreshCw className="w-4 h-4" />
+                        {downloadingId === fmt.id ? (
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Download className="w-3.5 h-3.5" />
+                        )}
+                        <span>Tải Về Máy</span>
                       </button>
-                    )}
+
+                      {/* Direct to Vault */}
+                      <button
+                        onClick={() => handleSaveToVault(fmt)}
+                        disabled={downloadingId === fmt.id}
+                        className="p-1.5 rounded-lg text-xs bg-slate-800 hover:bg-emerald-600 text-slate-300 hover:text-white border border-slate-700 transition"
+                        title="Lưu an toàn vào Kho Đám Mây"
+                      >
+                        <Cloud className="w-4 h-4" />
+                      </button>
+
+                      {/* Send to Converter */}
+                      {onSendToConverter && (
+                        <button
+                          onClick={() => handleSendToConverter(fmt)}
+                          disabled={downloadingId === fmt.id}
+                          className="p-1.5 rounded-lg text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
+                          title="Chuyển sang Bộ Chuyển Đổi (PNG sang ICO, MP4 sang MP3...)"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
                   </div>
+
+                  {/* Download Progress Bar */}
+                  {downloadingId === fmt.id && (
+                    <div className="flex items-center gap-2">
+                      <div className="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full bg-indigo-500 transition-all duration-300 ease-out ${downloadTotalBytes === 0 ? 'animate-pulse' : ''}`}
+                          style={{ width: `${downloadTotalBytes > 0 ? downloadProgress : 35}%` }}
+                        />
+                      </div>
+                      <span className="text-xs text-slate-400 font-mono tabular-nums">
+                        {downloadTotalBytes > 0
+                          ? `${formatBytes(downloadedBytes)} / ${formatBytes(downloadTotalBytes)} (${downloadProgress}%)`
+                          : `Đã tải ${formatBytes(downloadedBytes)}`}
+                      </span>
+                    </div>
+                  )}
                 </div>
               ))
             )}
